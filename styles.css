@@ -1,3 +1,5 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
+
 /* Minecraft font (Craftron Gaming "Minecraft Regular", self-hosted for offline use) */
 @font-face {
   font-family: "Minecraft";
@@ -6,7 +8,6 @@
   font-display: swap;
   src: url("fonts/minecraft.woff2") format("woff2"), url("fonts/minecraft.woff") format("woff");
 }
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap");
 
 :root {
   /* Minecraft GUI palette */
@@ -60,7 +61,7 @@ a { color: var(--mc-aqua); text-shadow: var(--shadow-px); }
 
 /* ---- The chest-GUI frame ---- */
 .gui {
-  max-width: 1280px;
+  max-width: 1440px;
   margin: 0 auto;
   background: var(--gui-gray);
   padding: 6px;
@@ -128,6 +129,7 @@ a { color: var(--mc-aqua); text-shadow: var(--shadow-px); }
 .ctl span { padding-left: 2px; }
 .ctl input[type="search"],
 .ctl input[type="number"],
+.ctl input[type="text"],
 .ctl select {
   font-family: inherit;
   font-size: 16px;
@@ -146,14 +148,71 @@ a { color: var(--mc-aqua); text-shadow: var(--shadow-px); }
 .ctl-buttons { display: flex; gap: 10px; padding-bottom: 1px; }
 
 /* ---- The inventory / slot area (table) ---- */
-main { padding: 4px 14px 14px; }
+main { padding: 8px 20px 20px; }
+.content-row { display: flex; gap: 16px; align-items: flex-start; }
+.table-area { flex: 1 1 auto; min-width: 0; }
+.watch-sidebar {
+  flex: 0 0 260px;
+  position: sticky;
+  top: 12px;
+  background: #1f1f26;
+  padding: 12px 14px;
+  box-shadow: inset 3px 3px 0 var(--gui-gray-dark), inset -3px -3px 0 var(--gui-gray-light);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+.watch-sidebar.hidden { display: none; }
+.watch-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.watch-head .watch-title { margin: 0; }
+.watch-collapse { background: none; border: none; color: #5a5a5a; font-size: 15px; cursor: pointer; line-height: 1; }
+.watch-collapse:hover { color: var(--mc-red); }
+.watch-filter {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--mc-white);
+  background: var(--slot-bg);
+  border: none;
+  padding: 6px 8px;
+  box-shadow: inset 2px 2px 0 var(--slot-border), inset -2px -2px 0 #45454f;
+  margin-bottom: 8px;
+}
+.watch-filter:focus { outline: none; box-shadow: inset 2px 2px 0 var(--slot-border), inset -2px -2px 0 #45454f, 0 0 0 2px var(--mc-yellow); }
+.watch-title { margin: 0 0 8px; font-size: 17px; color: var(--mc-gold); font-weight: normal; }
+.watch-list { list-style: none; margin: 0; padding: 0; }
+.watch-list li { padding: 8px 4px; border-bottom: 2px solid var(--slot-border); font-size: 14px; }
+.watch-list li:last-child { border-bottom: none; }
+.watch-item-row { display: flex; align-items: baseline; gap: 8px; }
+.watch-item-name { flex: 1; min-width: 0; color: var(--mc-aqua); }
+.watch-item-profit { color: var(--mc-green); white-space: nowrap; }
+.watch-item-sub { display: block; color: #8a8a96; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-meta { display: flex; flex-wrap: wrap; gap: 3px 10px; margin-top: 3px; font-size: 11px; color: var(--mc-gray); }
+.watch-alert-row { display: flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 11px; color: #8a8a96; }
+.watch-alert-row label { white-space: nowrap; }
+.watch-alert {
+  width: 76px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--mc-white);
+  background: var(--slot-bg);
+  border: none;
+  padding: 3px 6px;
+  box-shadow: inset 2px 2px 0 var(--slot-border), inset -2px -2px 0 #45454f;
+}
+.watch-alert:focus { outline: none; box-shadow: inset 2px 2px 0 var(--slot-border), inset -2px -2px 0 #45454f, 0 0 0 2px var(--mc-yellow); }
+.watch-unstar { background: none; border: none; color: var(--mc-gold); font-size: 16px; cursor: pointer; padding: 2px; line-height: 1; }
+.watch-unstar:hover { color: var(--mc-red); }
+.watch-empty { color: var(--mc-gray); font-size: 13px; margin: 6px 0; }
 .table-wrap {
   overflow-x: auto;
+  overflow-y: auto;
+  max-height: min(72vh, 680px);
+  overscroll-behavior: contain;
   background: #1f1f26;
   padding: 4px;
   box-shadow: inset 3px 3px 0 var(--gui-gray-dark), inset -3px -3px 0 var(--gui-gray-light);
 }
-table { width: 100%; border-collapse: collapse; min-width: 1040px; }
+table { width: 100%; border-collapse: collapse; min-width: 860px; }
 
 thead th {
   position: sticky;
@@ -163,12 +222,13 @@ thead th {
   color: var(--mc-gold);
   text-shadow: var(--shadow-px);
   text-align: right;
-  padding: 11px 12px;
-  font-size: 15px;
+  padding: 11px 5px;
+  font-size: 13px;
   font-weight: normal;
   cursor: pointer;
   user-select: none;
-  white-space: nowrap;
+  white-space: normal;
+  text-wrap: balance;
   box-shadow: inset 0 -2px 0 #1a1a20;
 }
 thead th.left { text-align: left; }
@@ -178,8 +238,8 @@ thead th.active { color: var(--mc-yellow); }
 
 tbody td {
   text-align: right;
-  padding: 9px 12px;
-  font-size: 15px;
+  padding: 9px 5px;
+  font-size: 13px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   border-bottom: 2px solid var(--slot-border);
@@ -198,7 +258,7 @@ tbody td:nth-child(3), tbody td:nth-child(4) { color: var(--mc-coin); }
 
 .item-name {
   font-family: inherit;
-  font-size: 16px;
+  font-size: 15px;
   color: var(--mc-aqua);
   text-shadow: var(--shadow-px);
   background: none;
@@ -207,7 +267,13 @@ tbody td:nth-child(3), tbody td:nth-child(4) { color: var(--mc-coin); }
   cursor: pointer;
 }
 .item-name:hover { color: var(--mc-yellow); text-decoration: underline; }
-.item-sub { color: #8a8a96; font-size: 12px; }
+.item-sub { color: #8a8a96; font-size: 11px; }
+tbody td:nth-child(2) { white-space: normal; word-break: break-word; min-width: 140px; }
+tbody .item-name { display: block; white-space: normal; }
+tbody .item-sub { display: block; margin-left: 0; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tbody td.risk-cell, tbody td.spark-cell, tbody td.star-cell { text-align: center; }
+
+/* coins-ish gold for prices, green/red for spread, bright profit */
 .exit-npc {
   font-size: 11px;
   color: #1c1c22;
@@ -245,6 +311,11 @@ tbody td:nth-child(3), tbody td:nth-child(4) { color: var(--mc-coin); }
 .spark-cell { text-align: left; }
 .spark { vertical-align: middle; }
 .spark-empty { color: #6f6f7a; }
+.spark-up { stroke: var(--mc-green); }
+.spark-down { stroke: var(--mc-red); }
+.spark-flat { stroke: var(--mc-gray); }
+
+thead th:last-child, tbody td:last-child { padding-right: 3px; }
 
 .empty { text-align: center !important; color: var(--mc-gray); padding: 36px !important; }
 .result-count { color: var(--mc-dgray); font-size: 14px; margin: 10px 4px 0; }
@@ -272,12 +343,19 @@ tbody td:nth-child(3), tbody td:nth-child(4) { color: var(--mc-coin); }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
 /* ---- Scrollbars to match ---- */
-.table-wrap::-webkit-scrollbar { height: 14px; }
+.table-wrap::-webkit-scrollbar { height: 14px; width: 14px; }
 .table-wrap::-webkit-scrollbar-track { background: #15151a; }
 .table-wrap::-webkit-scrollbar-thumb { background: #5a5a66; box-shadow: inset 1px 1px 0 #7a7a88, inset -1px -1px 0 #303038; }
+
+@media (max-width: 900px) {
+  .content-row { flex-direction: column; }
+  .watch-sidebar { position: static; flex: 1 1 auto; max-height: 240px; width: 100%; }
+}
 
 @media (max-width: 640px) {
   body { padding: 8px; }
   .gui-title h1 { font-size: 22px; }
-  .ctl input[type="search"], .ctl input[type="number"], .ctl select { width: 130px; }
+  .status-block { width: 100%; }
+  .status-line { min-width: 0; text-align: left; }
+  .ctl input[type="search"], .ctl input[type="number"], .ctl input[type="text"], .ctl select { width: 130px; }
 }

@@ -1,45 +1,68 @@
-/* Service worker: cache the app shell for offline use, and keep the last
- * successful bazaar response so the app shows stale-but-useful data offline. */
-const SHELL_CACHE = "bazaar-shell-v2";
+"use strict";
+
+/* Cache the app shell for offline use and retain the last successful Bazaar response. */
+const SHELL_CACHE = "bazaar-shell-v10";
 const DATA_CACHE = "bazaar-data-v1";
+
 const SHELL = [
-  "./", "index.html", "styles.css", "app.js", "recipes.js", "manifest.json",
-  "fonts/minecraft.woff2", "fonts/minecraft.woff",
+  "./",
+  "index.html",
+  "styles.css",
+  "app.js",
+  "recipes.js",
+  "manifest.json",
+  "fonts/minecraft.woff2",
+  "fonts/minecraft.woff",
 ];
 
-self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(SHELL_CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
-});
-
-self.addEventListener("activate", (e) => {
-  e.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.filter((k) => k !== SHELL_CACHE && k !== DATA_CACHE).map((k) => caches.delete(k))
-      )
-    ).then(() => self.clients.claim())
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(SHELL_CACHE)
+      .then((cache) => cache.addAll(SHELL))
+      .then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener("fetch", (e) => {
-  const url = new URL(e.request.url);
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(
+        keys
+          .filter((key) => key !== SHELL_CACHE && key !== DATA_CACHE)
+          .map((key) => caches.delete(key))
+      ))
+      .then(() => self.clients.claim())
+  );
+});
 
-  // Live API: network-first, fall back to last cached response when offline.
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+
+  // Live API: try the network first and fall back to cached data offline.
   if (url.hostname === "api.hypixel.net") {
-    e.respondWith(
-      fetch(e.request)
-        .then((res) => {
-          const copy = res.clone();
-          caches.open(DATA_CACHE).then((c) => c.put(e.request, copy));
-          return res;
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response.ok) {
+            const copy = response.clone();
+
+            caches.open(DATA_CACHE)
+              .then((cache) => cache.put(event.request, copy));
+          }
+
+          return response;
         })
-        .catch(() => caches.match(e.request))
+        .catch(() => caches.match(event.request))
     );
+
     return;
   }
 
-  // App shell: cache-first.
+  // App shell: use cached files first, then the network.
   if (url.origin === location.origin) {
-    e.respondWith(caches.match(e.request).then((cached) => cached || fetch(e.request)));
+    event.respondWith(
+      caches.match(event.request)
+        .then((cached) => cached || fetch(event.request))
+    );
   }
 });

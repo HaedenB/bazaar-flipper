@@ -39,7 +39,7 @@
       </label>
       <label class="ctl">
         <span>Min weekly volume</span>
-        <input id="min-volume" type="number" min="0" step="1000" />
+        <input id="min-volume" type="text" inputmode="decimal" placeholder="e.g. 500k (k, m)" />
       </label>
       <label class="ctl">
         <span>Bazaar Flipper perk</span>
@@ -54,21 +54,33 @@
         <span>Tax %</span>
         <input id="tax" type="number" min="0" max="100" step="0.025" />
       </label>
+      <label class="ctl checkbox">
+        <input id="buy-bump" type="checkbox" />
+        <span>Outbid top buy order</span>
+      </label>
+      <label class="ctl">
+        <span>Outbid +</span>
+        <input id="bump-amount" type="number" min="0" step="0.1" />
+      </label>
       <label class="ctl">
         <span>Your volume share %</span>
         <input id="share" type="number" min="0" max="100" step="1" />
       </label>
       <label class="ctl">
         <span>Budget (coins)</span>
-        <input id="budget" type="number" min="0" step="100000" placeholder="0 = ignore" />
+        <input id="budget" type="text" inputmode="decimal" placeholder="e.g. 50m (k, m, b, t)" />
       </label>
       <label class="ctl">
         <span>Alert profit/hr ≥</span>
-        <input id="alert-threshold" type="number" min="0" step="100000" placeholder="0 = off" />
+        <input id="alert-threshold" type="text" inputmode="decimal" placeholder="e.g. 1.5m (k, m, b, t)" />
       </label>
       <label class="ctl">
         <span>Show top</span>
         <input id="top-n" type="number" min="1" max="1000" step="10" />
+      </label>
+      <label class="ctl checkbox">
+        <input id="full-numbers" type="checkbox" />
+        <span>Full numbers</span>
       </label>
       <label class="ctl checkbox">
         <input id="auto-refresh" type="checkbox" />
@@ -79,14 +91,29 @@
         <span>★ Watchlist only</span>
       </label>
       <div class="ctl-buttons">
+        <button id="watch-toggle" class="mc-btn" title="Show/hide watchlist sidebar">★ Watch</button>
+        <button id="export-btn" class="mc-btn" title="Export settings + watchlist to a JSON file">⤓ Save</button>
+        <button id="import-btn" class="mc-btn" title="Import settings + watchlist from a JSON file">⤒ Load</button>
+        <input id="import-file" type="file" accept="application/json,.json" class="hidden" />
         <button id="csv-btn" class="mc-btn" title="Export current table to CSV">⤓ CSV</button>
         <button id="reset-btn" class="mc-btn" title="Reset settings to defaults">Reset</button>
       </div>
     </section>
 
     <main>
-      <div class="table-wrap">
-        <table id="flip-table">
+      <div class="content-row">
+        <aside id="watch-sidebar" class="watch-sidebar hidden" aria-label="Watchlist">
+          <div class="watch-head">
+            <h2 class="watch-title">★ Watchlist</h2>
+            <button id="watch-collapse" class="watch-collapse" title="Hide watchlist sidebar">✕</button>
+          </div>
+          <input id="watch-filter" class="watch-filter" type="search" placeholder="filter…" autocomplete="off" />
+          <ul id="watch-list" class="watch-list"></ul>
+          <p class="watch-empty">Star items in the table to track them here.</p>
+        </aside>
+        <div class="table-area">
+          <div class="table-wrap">
+            <table id="flip-table">
           <thead>
             <tr>
               <th class="left star-head">★</th>
@@ -98,17 +125,20 @@
               <th data-sort="depth">Depth</th>
               <th data-sort="limitingWeekly">Wk vol</th>
               <th data-sort="profitPerHour" class="active">Profit/hr ▼</th>
+              <th data-sort="effUnits">Buy qty</th> <!-- Added this missing header back -->
               <th data-sort="budgetProfit">Profit (budget)</th>
               <th data-sort="riskScore">Risk</th>
-              <th class="left">Trend</th>
+              <th class="left">1h Trend</th>
             </tr>
           </thead>
-          <tbody id="flip-body">
-            <tr><td colspan="12" class="empty">Loading live bazaar data…</td></tr>
-          </tbody>
-        </table>
+            <tbody id="flip-body">
+              <tr><td colspan="13" class="empty">Loading live bazaar data…</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p id="result-count" class="result-count"></p>
+        </div>
       </div>
-      <p id="result-count" class="result-count"></p>
     </main>
 
     <footer class="footer">

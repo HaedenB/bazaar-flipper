@@ -5,15 +5,82 @@ best flips by **estimated profit per hour** — themed to look like the in-game 
 
 ## Run it
 
-It's a static site — no build, no server, no API key.
+The website is a static site. Node.js 18 or newer is required for the MCP server. No Hypixel API key is needed.
 
-- **Easiest:** double-click `index.html`.
-- **Recommended** (enables the watchlist alerts, service worker / offline, and avoids `file://`
-  quirks):
-  ```sh
-  npx serve .
-  # then open the printed http://localhost:... URL
-  ```
+### Website
+
+**Option 1: Open directly**
+
+Double-click `index.html`. Some browser features, including service workers and offline support, require a local web server.
+
+**Option 2: Run locally**
+
+```bash
+npm start
+```
+
+Alternatively, without installing project dependencies:
+
+```bash
+npx serve .
+```
+
+Open the localhost URL printed in the terminal.
+
+### MCP server
+
+The project includes a read-only Model Context Protocol server that exposes live Bazaar data to compatible AI clients.
+
+**Run with stdio**
+
+```bash
+npm run mcp
+```
+
+**Run the HTTP sidecar**
+
+```bash
+npm run mcp:http
+```
+
+The HTTP server listens on port `8790` by default. Its RPC endpoint is `http://127.0.0.1:8790/rpc`, and its health endpoint is `http://127.0.0.1:8790/health`.
+
+**Run the website and MCP server together**
+
+```bash
+npm run start:all
+```
+
+Keep the terminal running while using the services.
+
+### Connect to OpenCode
+
+Add the following MCP entry to your OpenCode configuration, merging it into the existing `mcp` object if one is already present:
+
+```json
+{
+  "mcp": {
+    "bazaar-flipper": {
+      "type": "local",
+      "command": [
+        "node",
+        "/absolute/path/to/bazaar-flipper/mcp-server.js"
+      ],
+      "enabled": true
+    }
+  }
+}
+```
+
+Replace `/absolute/path/to/bazaar-flipper` with the actual absolute path to your cloned repository. Restart OpenCode after saving the configuration.
+
+Example prompts:
+
+- "Use bazaar-flipper to show the top 5 Bazaar flips."
+- "Get item details for ENCHANTED_GOLDEN_CARROT in craft mode."
+- "Search Bazaar products for enchanted carrot."
+
+See `UPDATES.md` for the changelog and additional feature details.
 
 ## How the flip math works
 

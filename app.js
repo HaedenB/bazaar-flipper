@@ -15,7 +15,8 @@ const BAZAAR_URL = "https://api.hypixel.net/v2/skyblock/bazaar";
 const ITEMS_URL = "https://api.hypixel.net/v2/resources/skyblock/items";
 const HOURS_PER_WEEK = 168;
 const REFRESH_SECONDS = 30;
-const HISTORY_LEN = 30;
+const TREND_WINDOW_MS = 60 * 60 * 1000; // sparkline covers the last hour
+const HISTORY_MAX_SAMPLES = 240; // ~2h of 30s samples before pruning
 
 const TAX_TIERS = { none: 1.25, t1: 1.125, t2: 1.0 };
 
@@ -26,14 +27,17 @@ const DEFAULTS = {
   taxPct: 1.25,
   taxPerk: "none",
   sharePct: 10,
+  buyBump: false,
+  bumpAmount: 0.1,
   budget: 0,
   topN: 100,
   alertThreshold: 0,
   autoRefresh: true,
   onlyWatch: false,
-  pinWatch: true,
+  watchSidebarOpen: true,
   sortKey: "profitPerHour",
   sortDir: "desc",
+  showFullNumbers: false,
 };
 
 const state = {
@@ -44,9 +48,13 @@ const state = {
   lastUpdated: null,
   countdown: REFRESH_SECONDS,
   watch: loadWatch(),
-  history: new Map(), // "mode:id" -> [marginPerUnit, ...]
+  watchAlerts: loadWatchAlerts(),
+  notifiedLow: new Set(),
+  watchFilter: "",
+  history: new Map(), // "mode:id" -> [{t, m}]
   alerted: new Set(),
   lastShown: [],
+  unfiltered: null,
 };
 
 const el = {
@@ -64,11 +72,22 @@ const el = {
   tax: document.getElementById("tax"),
   taxPerk: document.getElementById("tax-perk"),
   share: document.getElementById("share"),
+  buyBump: document.getElementById("buy-bump"),
+  bumpAmount: document.getElementById("bump-amount"),
   budget: document.getElementById("budget"),
   topN: document.getElementById("top-n"),
   alertThreshold: document.getElementById("alert-threshold"),
   autoRefresh: document.getElementById("auto-refresh"),
   onlyWatch: document.getElementById("only-watch"),
+  fullNumbers: document.getElementById("full-numbers"),
+  sidebar: document.getElementById("watch-sidebar"),
+  watchList: document.getElementById("watch-list"),
+  watchToggle: document.getElementById("watch-toggle"),
+  watchCollapse: document.getElementById("watch-collapse"),
+  watchFilter: document.getElementById("watch-filter"),
+  exportBtn: document.getElementById("export-btn"),
+  importBtn: document.getElementById("import-btn"),
+  importFile: document.getElementById("import-file"),
   headers: document.querySelectorAll("th[data-sort]"),
 };
 
@@ -81,7 +100,12 @@ function loadSettings() {
   }
 }
 function saveSettings() {
-  localStorage.setItem("bazaarFlipSettings", JSON.stringify(state.settings));
+  try {
+    localStorage.setItem(
+      "bazaarFlipSettings",
+      JSON.stringify(state.settings)
+    );
+  } catch {}
 }
 function loadWatch() {
   try {
@@ -91,7 +115,30 @@ function loadWatch() {
   }
 }
 function saveWatch() {
-  localStorage.setItem("bazaarFlipWatch", JSON.stringify([...state.watch]));
+  try {
+    localStorage.setItem(
+      "bazaarFlipWatch",
+      JSON.stringify([...state.watch])
+    );
+  } catch {}
+}
+function loadWatchAlerts() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("bazaarFlipWatchAlerts") || "{}");
+    const out = new Map();
+    for (const [id, v] of Object.entries(raw)) {
+      if (typeof v === "number") out.set(id, { sell: v, buy: 0 });
+      else out.set(id, { sell: Number(v.sell || 0), buy: Number(v.buy || 0) });
+    }
+    return out;
+  } catch {
+    return new Map();
+  }
+}
+function saveWatchAlerts() {
+  try {
+    localStorage.setItem("bazaarFlipWatchAlerts", JSON.stringify(Object.fromEntries(state.watchAlerts)));
+  } catch {}
 }
 
 /* ---------------- Data fetching ---------------- */
@@ -127,6 +174,7 @@ async function fetchItemMeta() {
 const prod = (id) => state.products[id];
 const buyOrderFill = (q) => q.sellPrice; // our buy order fills at the top buy order
 const sellOfferFill = (q) => q.buyPrice; // our sell offer fills at the lowest sell offer
+const bumpAdd = (opts) => (opts.buyBump ? (opts.bumpAmount || 0) : 0);
 
 function sumAmounts(summary) {
   let t = 0;
@@ -200,7 +248,7 @@ function computeBazaarFlips(opts) {
     const p = state.products[id];
     const q = p.quick_status;
     if (!q || !p.buy_summary?.length || !p.sell_summary?.length) continue;
-    const cost = buyOrderFill(q);
+    const cost = buyOrderFill(q) + bumpAdd(opts);
     const exit = sellOfferFill(q);
     if (!(cost > 0) || !(exit > 0)) continue;
     const marginPerUnit = exit * (1 - tax) - cost;
@@ -236,7 +284,7 @@ function computeNpcFlips(opts) {
     const p = state.products[id];
     const q = p.quick_status;
     if (!q || !p.sell_summary?.length) continue;
-    const cost = buyOrderFill(q); // acquire via buy order
+    const cost = buyOrderFill(q) + bumpAdd(opts); // acquire via buy order
     if (!(cost > 0)) continue;
     const marginPerUnit = npcPrice - cost; // NPC sales are untaxed
     if (marginPerUnit <= 0) continue;
@@ -280,7 +328,7 @@ function computeCraftFlips(opts) {
     for (const inp of recipe.inputs) {
       const ip = prod(inp.id);
       if (!ip || !ip.quick_status || !ip.sell_summary?.length) { ok = false; break; }
-      const unitCost = buyOrderFill(ip.quick_status);
+      const unitCost = buyOrderFill(ip.quick_status) + bumpAdd(opts);
       if (!(unitCost > 0)) { ok = false; break; }
       ingredientCost += unitCost * inp.qty;
       acquisitionWeekly = Math.min(acquisitionWeekly, (ip.quick_status.buyMovingWeek || 0) / inp.qty);
@@ -326,7 +374,10 @@ function buildFlip(a) {
   const flipsPerHour = (a.limitingWeekly / HOURS_PER_WEEK) * a.share;
   const profitPerHour = a.marginPerUnit * flipsPerHour;
   const unitsAffordable = a.opts.budget > 0 ? Math.floor(a.opts.budget / a.cost) : Infinity;
-  const effUnits = Math.min(unitsAffordable, a.depth);
+  const effUnits = Math.max(
+    0,
+    Math.floor(Math.min(unitsAffordable, a.depth))
+  );
   const budgetProfit = a.opts.budget > 0 ? a.marginPerUnit * effUnits : 0;
   return {
     mode: a.mode, id: a.id, name: a.name, sub: a.sub,
@@ -347,12 +398,46 @@ function computeForMode(mode, opts) {
 }
 
 /* ---------------- Formatting ---------------- */
+function parseCompactNumber(value) {
+  const raw = String(value ?? "")
+    .trim()
+    .replace(/[,\s_]/g, "");
+
+  if (raw === "") return 0;
+
+  const match = raw.match(
+    /^([+-]?(?:\d+\.?\d*|\.\d+))([kmbt]?)$/i
+  );
+
+  if (!match) return null;
+
+  const multipliers = {
+    "": 1,
+    k: 1e3,
+    m: 1e6,
+    b: 1e9,
+    t: 1e12
+  };
+
+  const result =
+    Number(match[1]) * multipliers[match[2].toLowerCase()];
+
+  return Number.isFinite(result) ? result : null;
+}
 function formatCoins(n) {
-  if (!isFinite(n)) return "∞";
+  if (!Number.isFinite(n)) return "∞";
+
+  if (state.settings.showFullNumbers) {
+    return n.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  }
+
   const abs = Math.abs(n);
+
+  if (abs >= 1e12) return (n / 1e12).toFixed(2) + "T";
   if (abs >= 1e9) return (n / 1e9).toFixed(2) + "B";
   if (abs >= 1e6) return (n / 1e6).toFixed(2) + "M";
   if (abs >= 1e3) return (n / 1e3).toFixed(1) + "k";
+
   return n.toFixed(abs < 10 ? 1 : 0);
 }
 function formatInt(n) {
@@ -373,15 +458,15 @@ const RISK_BADGE = {
 
 function sparkline(values) {
   if (!values || values.length < 2) return '<span class="spark-empty">—</span>';
-  const w = 56, h = 16;
-  const min = Math.min(...values), max = Math.max(...values), range = max - min || 1;
+  const w = 36, h = 16;
+  const ms = values.map((s) => s.m);
+  const min = Math.min(...ms), max = Math.max(...ms), range = max - min || 1;
   const pts = values
-    .map((v, i) => `${((i / (values.length - 1)) * w).toFixed(1)},${(h - ((v - min) / range) * h).toFixed(1)}`)
+    .map((s, i) => `${((i / (values.length - 1)) * w).toFixed(1)},${(h - ((s.m - min) / range) * h).toFixed(1)}`)
     .join(" ");
-  const up = values[values.length - 1] >= values[0];
-  return `<svg width="${w}" height="${h}" class="spark"><polyline points="${pts}" fill="none" stroke="${
-    up ? "#55ff55" : "#ff5555"
-  }" stroke-width="1.5" /></svg>`;
+  const first = ms[0], last = ms[ms.length - 1];
+  const dir = Math.abs(last - first) < range * 0.05 ? "spark-flat" : last > first ? "spark-up" : "spark-down";
+  return `<svg width="${w}" height="${h}" class="spark"><polyline points="${pts}" fill="none" class="${dir}" stroke-width="1.5" /></svg>`;
 }
 
 /* ---------------- Mode-aware column labels ---------------- */
@@ -391,11 +476,12 @@ const MODE_COL = {
   craft: { buyOrderPrice: "Craft cost", sellOfferPrice: "Exit price" },
 };
 const STATIC_COL = {
-  marginPerUnit: "Margin/unit",
+  marginPerUnit: "Margin",
   marginPct: "Margin %",
   depth: "Depth",
   limitingWeekly: "Wk vol",
   profitPerHour: "Profit/hr",
+  effUnits: "Buy qty",
   budgetProfit: "Profit (budget)",
   riskScore: "Risk",
 };
@@ -408,6 +494,7 @@ function getFilteredSorted() {
   const s = state.settings;
   let flips = computeForMode(s.mode, {
     taxPct: s.taxPct, sharePct: s.sharePct, minVolume: s.minVolume, budget: s.budget,
+    buyBump: s.buyBump, bumpAmount: s.bumpAmount,
   });
   const query = s.search.trim().toLowerCase();
   if (query) {
@@ -421,9 +508,6 @@ function getFilteredSorted() {
     if (typeof av === "string") return av.localeCompare(bv) * dir;
     return (av - bv) * dir;
   });
-  if (s.pinWatch && state.watch.size) {
-    flips.sort((a, b) => (state.watch.has(b.id) ? 1 : 0) - (state.watch.has(a.id) ? 1 : 0));
-  }
   return flips;
 }
 
@@ -432,6 +516,7 @@ function applyFiltersAndRender() {
   const all = getFilteredSorted();
   const shown = all.slice(0, state.settings.topN);
   renderRows(shown);
+  renderWatchSidebar();
   const s = state.settings;
   const modeName = { bazaar: "bazaar", npc: "NPC", craft: "craft" }[s.mode];
   el.count.textContent = all.length
@@ -443,42 +528,148 @@ function applyFiltersAndRender() {
   state.lastShown = shown;
 }
 
+function watchFlipById() {
+  if (!state.unfiltered) {
+    const s = state.settings;
+    state.unfiltered = computeForMode(s.mode, {
+      taxPct: s.taxPct, sharePct: s.sharePct, minVolume: 0, budget: s.budget,
+    });
+  }
+  return new Map(state.unfiltered.map((f) => [f.id, f]));
+}
+
+function renderWatchSidebar() {
+  const open = state.settings.watchSidebarOpen && state.watch.size > 0;
+  el.sidebar.classList.toggle("hidden", !open);
+  if (!open) return;
+
+  const q = state.watchFilter.trim().toLowerCase();
+  const byId = watchFlipById();
+  let entries = [...state.watch].map((id) => byId.get(id)).filter(Boolean);
+  if (q) entries = entries.filter((f) => f.name.toLowerCase().includes(q) || f.id.toLowerCase().includes(q));
+  const stale = [...state.watch].filter((id) => !byId.has(id));
+
+  const active = document.activeElement;
+  if (active && el.sidebar.contains(active) && active.classList.contains("watch-alert")) return;
+
+  const alertCell = (id) => {
+    const t = state.watchAlerts.get(id) || {};
+    const sell = Number(t.sell || 0), buy = Number(t.buy || 0);
+    return `<span class="watch-alert-row">
+      <label>sell ≤</label><input class="watch-alert" data-alert-id="${escapeHtml(id)}" data-alert-kind="sell" inputmode="decimal" placeholder="off" value="${sell > 0 ? escapeHtml(String(sell)) : ""}" />
+      <label>buy ≥</label><input class="watch-alert" data-alert-id="${escapeHtml(id)}" data-alert-kind="buy" inputmode="decimal" placeholder="off" value="${buy > 0 ? escapeHtml(String(buy)) : ""}" />
+    </span>`;
+  };
+
+  el.watchList.innerHTML =
+    entries.map((f) => `<li>
+      <button class="watch-unstar" data-watch="${escapeHtml(f.id)}" title="Remove from watchlist">★</button>
+      <span class="watch-item-main">
+        <span class="watch-item-row">
+          <span class="watch-item-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+          <span class="watch-item-profit">${formatCoins(f.profitPerHour)}/hr</span>
+        </span>
+        <span class="watch-item-sub" title="${escapeHtml(f.sub)}">${escapeHtml(f.sub)}</span>
+        <span class="watch-meta">
+          <span>buy ${formatCoins(f.buyOrderPrice)}</span>
+          <span>sell ${formatCoins(f.sellOfferPrice)}</span>
+          <span>margin ${formatCoins(f.marginPerUnit)} (${f.marginPct.toFixed(1)}%)</span>
+          <span>depth ${formatInt(f.depth)}</span>
+        </span>
+        ${alertCell(f.id)}
+      </span>
+    </li>`).join("") +
+    (q ? "" : stale.map((id) => `<li>
+      <button class="watch-unstar" data-watch="${escapeHtml(id)}" title="Remove from watchlist">★</button>
+      <span class="watch-item-main">
+        <span class="watch-item-row">
+          <span class="watch-item-name">${escapeHtml(nameOf(id))}</span>
+        </span>
+        <span class="watch-item-sub">no flip in current mode</span>
+        ${alertCell(id)}
+      </span>
+    </li>`).join(""));
+}
+
+function checkWatchAlerts() {
+  if (!state.unfiltered) return;
+  const byId = new Map(state.unfiltered.map((f) => [f.id, f]));
+  const notify = (key, icon, name, actual, target, dirWord) => {
+    if (state.notifiedLow.has(key)) return;
+    state.notifiedLow.add(key);
+    beep();
+    showToast(`${icon} ${name} ${dirWord} ${formatCoins(actual)} ${icon === "⬇" ? "≤" : "≥"} ${formatCoins(target)}`);
+    if ("Notification" in window && Notification.permission === "granted") {
+      new Notification("Watchlist price alert", {
+        body: `${name} ${dirWord} ${formatCoins(actual)} (${icon === "⬇" ? "≤" : "≥"} ${formatCoins(target)})`,
+      });
+    }
+  };
+  for (const id of state.watch) {
+    const t = state.watchAlerts.get(id) || {};
+    const f = byId.get(id);
+    if (!f) continue;
+    const sellT = Number(t.sell || 0), buyT = Number(t.buy || 0);
+    if (sellT > 0) {
+      const key = id + ":sell";
+      if (f.sellOfferPrice <= sellT) notify(key, "⬇", nameOf(id), f.sellOfferPrice, sellT, "sell offer");
+      else if (f.sellOfferPrice > sellT) state.notifiedLow.delete(key);
+    }
+    if (buyT > 0) {
+      const key = id + ":buy";
+      if (f.buyOrderPrice >= buyT) notify(key, "⬆", nameOf(id), f.buyOrderPrice, buyT, "buy order");
+      else if (f.buyOrderPrice < buyT) state.notifiedLow.delete(key);
+    }
+  }
+}
+
 function renderRows(flips) {
   if (!flips.length) {
-    el.body.innerHTML = `<tr><td colspan="12" class="empty">No flips match the current filters.</td></tr>`;
+    el.body.innerHTML =
+      `<tr><td colspan="13" class="empty">No flips match the current filters.</td></tr>`;
     return;
   }
+
   const budgetOn = state.settings.budget > 0;
+
   el.body.innerHTML = flips
     .map((f) => {
       const cls = f.marginPerUnit >= 0 ? "pos" : "neg";
       const badge = RISK_BADGE[f.riskLevel];
       const watched = state.watch.has(f.id);
-      const reasons = f.riskReasons.length ? escapeHtml(f.riskReasons.join(" • ")) : "No risk flags";
-      const exitTag = f.exitLabel === "NPC" ? ` <span class="exit-npc">NPC</span>` : "";
-      const budgetCell = budgetOn
-        ? `<td class="profit ${f.budgetProfit > 0 ? "pos" : ""}" title="${formatInt(
-            f.effUnits
-          )} units (affordable: ${formatInt(f.unitsAffordable)})">${formatCoins(f.budgetProfit)}</td>`
+
+      const reasons = f.riskReasons.length
+        ? escapeHtml(f.riskReasons.join(" • "))
+        : "No risk flags";
+
+      const exitTag = f.exitLabel === "NPC"
+        ? ` <span class="exit-npc">NPC</span>`
+        : "";
+
+      const quantityCell = budgetOn
+        ? `<td title="Affordable: ${formatInt(f.unitsAffordable)}; capped by order-book depth">${formatInt(f.effUnits)}</td>`
         : `<td class="muted">—</td>`;
+
+      const budgetCell = budgetOn
+        ? `<td class="profit ${f.budgetProfit > 0 ? "pos" : ""}" title="${formatInt(f.effUnits)} units (affordable: ${formatInt(f.unitsAffordable)})">${formatCoins(f.budgetProfit)}</td>`
+        : `<td class="muted">—</td>`;
+
       return `<tr>
-        <td class="left star-cell"><button class="star ${watched ? "on" : ""}" data-watch="${escapeHtml(
-        f.id
-      )}" title="Toggle watchlist">${watched ? "★" : "☆"}</button></td>
+        <td class="left star-cell">
+          <button class="star ${watched ? "on" : ""}" data-watch="${escapeHtml(f.id)}" title="Toggle watchlist">${watched ? "★" : "☆"}</button>
+        </td>
         <td class="left">
-          <button class="item-name copy-name" data-copy="${escapeHtml(f.name)}" title="Click to copy">${escapeHtml(
-        f.name
-      )}</button><br /><span class="item-sub">${escapeHtml(f.sub)}</span>
+          <button class="item-name copy-name" data-copy="${escapeHtml(f.name)}" title="Click to copy">${escapeHtml(f.name)}</button>
+          <span class="item-sub">${escapeHtml(f.sub)}</span>
         </td>
         <td>${formatCoins(f.buyOrderPrice)}</td>
         <td>${formatCoins(f.sellOfferPrice)}${exitTag}</td>
         <td class="${cls}">${formatCoins(f.marginPerUnit)}</td>
         <td class="${cls}">${f.marginPct.toFixed(1)}%</td>
         <td title="Units available within ~1% of the spread">${formatInt(f.depth)}</td>
-        <td title="Buy ${formatInt(f.buyMovingWeek)} / Sell ${formatInt(f.sellMovingWeek)} per week">${formatInt(
-        f.limitingWeekly
-      )}</td>
+        <td title="Buy ${formatInt(f.buyMovingWeek)} / Sell ${formatInt(f.sellMovingWeek)} per week">${formatInt(f.limitingWeekly)}</td>
         <td class="profit pos">${formatCoins(f.profitPerHour)}</td>
+        ${quantityCell}
         ${budgetCell}
         <td><span class="risk ${badge.cls}" title="${reasons}">${badge.txt}</span></td>
         <td class="spark-cell">${sparkline(state.history.get(f.mode + ":" + f.id))}</td>
@@ -500,20 +691,45 @@ function updateSortHeaders() {
     if (!label) return;
     const isActive = key === state.settings.sortKey;
     th.classList.toggle("active", isActive);
-    const arrow = isActive ? (state.settings.sortDir === "asc" ? " ▲" : " ▼") : "";
+    const arrow = isActive ? (state.settings.sortDir === "asc" ? "\u00A0▲" : "\u00A0▼") : "";
     th.textContent = label + arrow;
   });
 }
 
 /* ---------------- History + alerts ---------------- */
+function loadTrendHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem("bazaarTrendHistory") || "{}");
+    const now = Date.now();
+    for (const key of Object.keys(raw)) {
+      const cut = now - TREND_WINDOW_MS;
+      raw[key] = raw[key].filter((s) => s.t > cut);
+      if (!raw[key].length) delete raw[key];
+    }
+    return new Map(Object.entries(raw));
+  } catch {
+    return new Map();
+  }
+}
+function saveTrendHistory() {
+  try {
+    const obj = {};
+    for (const [k, v] of state.history) obj[k] = v;
+    localStorage.setItem("bazaarTrendHistory", JSON.stringify(obj));
+  } catch {}
+}
 function recordHistory(flips) {
+  const now = Date.now();
+  const cut = now - TREND_WINDOW_MS;
   for (const f of flips) {
     const key = f.mode + ":" + f.id;
     const arr = state.history.get(key) || [];
-    arr.push(f.marginPerUnit);
-    if (arr.length > HISTORY_LEN) arr.shift();
+    arr.push({ t: now, m: f.marginPerUnit });
+    while (arr.length && arr[0].t < cut) arr.shift();
+    if (arr.length > HISTORY_MAX_SAMPLES) arr.splice(0, arr.length - HISTORY_MAX_SAMPLES);
     state.history.set(key, arr);
   }
+  saveTrendHistory();
 }
 function beep() {
   try {
@@ -566,7 +782,8 @@ function exportCsv() {
   if (!flips.length) return showToast("Nothing to export");
   const cols = [
     "mode", "id", "name", "buyOrderPrice", "sellOfferPrice", "marginPerUnit",
-    "marginPct", "depth", "limitingWeekly", "profitPerHour", "budgetProfit", "riskLevel", "exitLabel",
+    "marginPct", "depth", "limitingWeekly", "profitPerHour",
+    "effUnits", "budgetProfit", "riskLevel", "exitLabel",
   ];
   const rows = [cols.join(",")];
   for (const f of flips) {
@@ -612,12 +829,14 @@ async function refresh() {
     await Promise.all([fetchBazaar(), fetchItemMeta()]);
     clearError();
     const flips = getFilteredSorted();
-    // History across all profitable flips in the current mode (ignore min-vol filter).
-    recordHistory(
-      computeForMode(state.settings.mode, {
-        taxPct: state.settings.taxPct, sharePct: state.settings.sharePct, minVolume: 0, budget: state.settings.budget,
-      })
-    );
+    // Full (min-volume-ignored) flip list drives the trend history, sidebar and alerts.
+    const unfiltered = computeForMode(state.settings.mode, {
+      taxPct: state.settings.taxPct, sharePct: state.settings.sharePct, minVolume: 0, budget: state.settings.budget,
+      buyBump: state.settings.buyBump, bumpAmount: state.settings.bumpAmount,
+    });
+    state.unfiltered = unfiltered;
+    recordHistory(unfiltered);
+    checkWatchAlerts();
     checkAlerts(flips);
     applyFiltersAndRender();
   } catch (err) {
@@ -645,11 +864,47 @@ function syncInputsFromSettings() {
   el.tax.value = s.taxPct;
   el.taxPerk.value = s.taxPerk;
   el.share.value = s.sharePct;
+  el.buyBump.checked = Boolean(s.buyBump);
+  el.bumpAmount.value = s.bumpAmount;
   el.budget.value = s.budget;
   el.topN.value = s.topN;
   el.alertThreshold.value = s.alertThreshold;
   el.autoRefresh.checked = s.autoRefresh;
   el.onlyWatch.checked = s.onlyWatch;
+  el.fullNumbers.checked = Boolean(s.showFullNumbers);
+}
+
+function bindCompactNumberInput(input, settingKey) {
+  const commit = (normalize, requestNotification = false) => {
+    const parsed = parseCompactNumber(input.value);
+    if (parsed === null) return;
+
+    const value = Math.max(0, parsed);
+    state.settings[settingKey] = value;
+
+    if (normalize) {
+      input.value = String(value);
+    }
+
+    if (settingKey === "alertThreshold") {
+      state.alerted.clear();
+
+      if (
+        requestNotification &&
+        value > 0 &&
+        "Notification" in window &&
+        Notification.permission === "default"
+      ) {
+        Notification.requestPermission();
+      }
+    }
+
+    saveSettings();
+    applyFiltersAndRender();
+  };
+
+  input.addEventListener("input", () => commit(false));
+  input.addEventListener("change", () => commit(true, true));
 }
 
 function bindControls() {
@@ -669,9 +924,16 @@ function bindControls() {
     applyFiltersAndRender();
   });
   el.search.addEventListener("input", onChange("search", (v) => v));
-  el.minVolume.addEventListener("input", onChange("minVolume", num));
+  bindCompactNumberInput(el.minVolume, "minVolume");
+  bindCompactNumberInput(el.budget, "budget");
+  bindCompactNumberInput(el.alertThreshold, "alertThreshold");
   el.share.addEventListener("input", onChange("sharePct", num));
-  el.budget.addEventListener("input", onChange("budget", num));
+  el.buyBump.addEventListener("change", (e) => {
+    state.settings.buyBump = e.target.checked;
+    saveSettings();
+    applyFiltersAndRender();
+  });
+  el.bumpAmount.addEventListener("input", onChange("bumpAmount", num));
   el.topN.addEventListener("input", onChange("topN", num));
 
   el.tax.addEventListener("input", (e) => {
@@ -693,16 +955,6 @@ function bindControls() {
     saveSettings();
     applyFiltersAndRender();
   });
-  el.alertThreshold.addEventListener("input", (e) => {
-    const v = num(e.target.value);
-    if (v === null || Number.isNaN(v)) return;
-    state.settings.alertThreshold = v;
-    state.alerted.clear();
-    saveSettings();
-    if (v > 0 && "Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission();
-    }
-  });
   el.autoRefresh.addEventListener("change", (e) => {
     state.settings.autoRefresh = e.target.checked;
     state.countdown = REFRESH_SECONDS;
@@ -714,9 +966,91 @@ function bindControls() {
     saveSettings();
     applyFiltersAndRender();
   });
+  el.fullNumbers.addEventListener("change", (event) => {
+    state.settings.showFullNumbers = event.target.checked;
+    saveSettings();
+    applyFiltersAndRender();
+  });
 
   el.refresh.addEventListener("click", refresh);
   el.csv.addEventListener("click", exportCsv);
+  el.watchToggle.addEventListener("click", () => {
+    state.settings.watchSidebarOpen = !state.settings.watchSidebarOpen;
+    saveSettings();
+    renderWatchSidebar();
+  });
+  el.watchCollapse.addEventListener("click", () => {
+    state.settings.watchSidebarOpen = false;
+    saveSettings();
+    renderWatchSidebar();
+  });
+  el.watchFilter.addEventListener("input", (e) => {
+    state.watchFilter = e.target.value;
+    renderWatchSidebar();
+  });
+  el.watchList.addEventListener("change", (e) => {
+    const input = e.target.closest("[data-alert-id]");
+    if (!input) return;
+    const id = input.dataset.alertId;
+    const kind = input.dataset.alertKind === "buy" ? "buy" : "sell";
+    const v = parseCompactNumber(input.value);
+    const t = { ...(state.watchAlerts.get(id) || { sell: 0, buy: 0 }) };
+    if (v === null) {
+      input.value = "";
+      t[kind] = 0;
+    } else {
+      const val = Math.max(0, v);
+      t[kind] = val;
+      input.value = String(val);
+      if (val > 0 && "Notification" in window && Notification.permission === "default") {
+        Notification.requestPermission();
+      }
+    }
+    if (!t.sell && !t.buy) state.watchAlerts.delete(id);
+    else state.watchAlerts.set(id, t);
+    state.notifiedLow.delete(id + ":sell");
+    state.notifiedLow.delete(id + ":buy");
+    saveWatchAlerts();
+  });
+  el.exportBtn.addEventListener("click", () => {
+    const payload = JSON.stringify({
+      app: "bazaar-flipper",
+      version: 1,
+      settings: state.settings,
+      watchlist: [...state.watch],
+      watchAlerts: Object.fromEntries(state.watchAlerts),
+    }, null, 2);
+    const blob = new Blob([payload], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "bazaar-flipper-settings.json";
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast("Settings exported");
+  });
+  el.importBtn.addEventListener("click", () => el.importFile.click());
+  el.importFile.addEventListener("change", () => {
+    const file = el.importFile.files && el.importFile.files[0];
+    el.importFile.value = "";
+    if (!file) return;
+    file.text().then((text) => {
+      const data = JSON.parse(text);
+      if (!data || typeof data !== "object" || !data.settings) throw new Error("not a settings file");
+      state.settings = { ...DEFAULTS, ...data.settings };
+      state.watch = new Set(Array.isArray(data.watchlist) ? data.watchlist : []);
+      state.watchAlerts = new Map(Object.entries(data.watchAlerts || {}));
+      state.notifiedLow.clear();
+      state.alerted.clear();
+      saveSettings();
+      saveWatch();
+      saveWatchAlerts();
+      syncInputsFromSettings();
+      renderWatchSidebar();
+      applyFiltersAndRender();
+      showToast("Settings imported");
+    }).catch((e) => showToast("Import failed: " + e.message));
+  });
   el.reset.addEventListener("click", () => {
     state.settings = { ...DEFAULTS };
     saveSettings();
@@ -744,14 +1078,27 @@ function bindControls() {
     }
   });
 
+  let sortClickKey = null;
+  let sortClickCount = 0;
   el.headers.forEach((th) => {
     th.addEventListener("click", () => {
       const key = th.dataset.sort;
       if (state.settings.sortKey === key) {
-        state.settings.sortDir = state.settings.sortDir === "asc" ? "desc" : "asc";
+        sortClickCount += 1;
+        if (sortClickCount >= 3) {
+          state.settings.sortKey = DEFAULTS.sortKey;
+          state.settings.sortDir = DEFAULTS.sortDir;
+          sortClickKey = null;
+          sortClickCount = 0;
+          showToast("Sort reset to default");
+        } else {
+          state.settings.sortDir = state.settings.sortDir === "asc" ? "desc" : "asc";
+        }
       } else {
         state.settings.sortKey = key;
         state.settings.sortDir = "desc";
+        sortClickKey = key;
+        sortClickCount = 1;
       }
       saveSettings();
       applyFiltersAndRender();

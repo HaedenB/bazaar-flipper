@@ -1,0 +1,12 @@
+{
+  "name": "bazaar-flipper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SkyBlock Bazaar flip finder (static site) + read-only MCP server over live bazaar data",
+  "scripts": {
+    "start": "npx serve .",
+    "mcp": "node mcp-server.js",
+    "mcp:http": "node mcp-server.js --http 8790",
+    "start:all": "npx serve . & node mcp-server.js --http 8790 & wait"
+  }
+}
